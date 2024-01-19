@@ -1,8 +1,11 @@
 // This file is part of OpenCV project.
 // It is subject to the license terms in the LICENSE file found in the top-level directory
 // of this distribution and at http://opencv.org/license.html
+#include <stdio.h>
+#include "jpeglib.h"
 #include "test_precomp.hpp"
 
+#include <chrono>
 namespace opencv_test { namespace {
 
 #ifdef HAVE_JPEG
@@ -177,6 +180,144 @@ TEST(Imgcodecs_Jpeg, encode_decode_rst_jpeg)
     EXPECT_EQ(0, remove(output_rst.c_str()));
     EXPECT_EQ(0, remove(output_normal.c_str()));
 }
+
+void testTranscodeOne(const cv::Mat& original, cv::Size targetSize, int batches, cv::ImwriteJPEGSamplingFactorParams samplingFactor = cv::IMWRITE_JPEG_SAMPLING_FACTOR_420) {
+    std::vector<uchar> outputNonbatched, outputBatched;
+
+    cv::Mat sourceImage;
+    cv::resize(original, sourceImage, targetSize);
+
+    std::chrono::high_resolution_clock::time_point startNonbatched = std::chrono::high_resolution_clock::now();
+    cv::imencode(".jpg", sourceImage, outputNonbatched, { cv::IMWRITE_JPEG_SAMPLING_FACTOR, samplingFactor });
+    std::chrono::high_resolution_clock::time_point endNonbatched = std::chrono::high_resolution_clock::now();
+    cv::Mat decodedNonbatched = cv::imdecode(outputNonbatched, cv::IMREAD_COLOR);
+
+    std::chrono::high_resolution_clock::time_point startBatched = std::chrono::high_resolution_clock::now();
+    cv::imencode(".jpg", sourceImage, outputBatched, { cv::IMWRITE_JPEG_RST_INTERVAL, batches, cv::IMWRITE_JPEG_SAMPLING_FACTOR, samplingFactor });
+    std::chrono::high_resolution_clock::time_point endBatched = std::chrono::high_resolution_clock::now();
+    cv::Mat decodedBatched = cv::imdecode(outputBatched, cv::IMREAD_COLOR);
+
+    auto durationNonbatched = std::chrono::duration_cast<std::chrono::microseconds>(endNonbatched - startNonbatched).count();
+    auto durationBatched = std::chrono::duration_cast<std::chrono::microseconds>(endBatched - startBatched).count();
+    std::cout << "Speed-up (times): " << durationNonbatched / (double)durationBatched << std::endl;
+
+    ASSERT_EQ(sourceImage.size(), decodedNonbatched.size());
+    ASSERT_EQ(0, cvtest::norm(decodedNonbatched, decodedBatched, NORM_INF));
+
+    decodedNonbatched.convertTo(decodedNonbatched, CV_16S);
+    decodedBatched.convertTo(decodedBatched, CV_16S);
+    auto diff = cv::abs(decodedNonbatched - decodedBatched);
+    double maxDiff;
+    cv::minMaxLoc(diff, nullptr, &maxDiff);
+    ASSERT_EQ(0, maxDiff);
+
+    // TODO: test grayscale (cinfo->comps_in_scan == 1)
+    // it may require us to set iMCU_row_num on the batches
+}
+
+void testTranscodeAllColorspaces(const cv::Mat& bgr, cv::Size targetSize, int batches) {
+    static const std::array<cv::ImwriteJPEGSamplingFactorParams, 5> samplingModes = {
+        cv::IMWRITE_JPEG_SAMPLING_FACTOR_411,
+        cv::IMWRITE_JPEG_SAMPLING_FACTOR_420,
+        cv::IMWRITE_JPEG_SAMPLING_FACTOR_422,
+        cv::IMWRITE_JPEG_SAMPLING_FACTOR_440,
+        cv::IMWRITE_JPEG_SAMPLING_FACTOR_444
+    };
+
+    for (auto samplingMode : samplingModes) {
+        testTranscodeOne(bgr, targetSize, batches, samplingMode);
+        cv::Mat gray;
+        cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+        testTranscodeOne(gray, targetSize, batches, samplingMode);
+        cv::Mat bgra;
+        cv::cvtColor(bgr, bgra, cv::COLOR_BGR2BGRA);
+        testTranscodeOne(bgra, targetSize, batches, samplingMode);
+    }
+}
+
+void writeOne(const cv::Mat& original, cv::Size targetSize, const std::string& fileName, int batches) {
+    std::vector<uchar> outputBatched;
+
+    cv::Mat sourceImage;
+    cv::resize(original, sourceImage, targetSize);
+
+    cv::imwrite(fileName, sourceImage, { cv::IMWRITE_JPEG_RST_INTERVAL, batches });
+}
+
+void initJpegParallelization() {
+    static bool initialized [[maybe_unused]] = ([]() {
+        static jpeg_parallel_impl impl;
+
+        impl.apply = [](jpeg_batch_entry_point entry_point, int num_batches, void* context) {
+            cv::parallel_for_(cv::Range(0, num_batches), [=](const cv::Range& range) {
+                entry_point(context, range.start);
+            }, num_batches);
+
+            // for (int i = num_batches - 1; i >= 0; --i) {
+            //     entry_point(context, i);
+            // }
+        };
+
+        jpeg_set_parallel_impl(&impl);
+
+        return true;
+    })();
+}
+
+typedef testing::TestWithParam<std::pair<int, int>> Imgcodecs_Jpeg_Batching;
+
+// TEST_P(Imgcodecs_Jpeg_Batching, encode_benchmark)
+// {
+//     cvtest::TS& ts = *cvtest::TS::ptr();
+//     string input = string(ts.get_data_path()) + "../cv/shared/lena.png";
+//     cv::Mat img = cv::imread(input);
+//     ASSERT_FALSE(img.empty());
+
+//     initJpegParallelization();
+
+//     // testTranscodeOne(img, {512, 512});
+//     auto sizeRange = GetParam();
+//     for (int i = sizeRange.first; i <= sizeRange.second; ++i) {
+//         const int batches = 0;
+//         // for (int batches = 2; batches <= 8; ++batches) {
+//             testTranscodeAllColorspaces(img, {i, i}, batches);
+//             // testTranscodeAllColorspaces(img, {i, 511}, batches);
+//             // testTranscodeAllColorspaces(img, {511, i}, batches);
+//         // }
+//     }
+//     // testTranscodeAllColorspaces(img, {512, 512}, 4);
+//     // writeOne(img, {65, 65}, "511.jpg", 4);
+//     // writeOne(img, {512, 512}, "512.jpg", 7);
+// }
+
+TEST(Imgcodecs_Jpeg, encode_test)
+{
+    cvtest::TS& ts = *cvtest::TS::ptr();
+    string input = string(ts.get_data_path()) + "../cv/shared/lena.png";
+    cv::Mat img = cv::imread(input);
+    ASSERT_FALSE(img.empty());
+
+    initJpegParallelization();
+
+    writeOne(img, {512, 512}, "parallel.jpg", 4);
+
+    // int* p = new int[20];
+    // delete[] p;
+    // p[0] = 15;
+    // std::cout << "use after free: " << p[0] << std::endl;
+}
+
+std::vector<std::pair<int, int>> ranges = ([]() {
+    std::vector<std::pair<int, int>> result;
+    for (int i = 2048; i < 2048 + 64; i += 16) {
+        result.emplace_back(i, i + 16 - 1);
+    }
+    return result;
+})();
+
+
+// INSTANTIATE_TEST_CASE_P(Imgcodecs_Jpeg_Batching, Imgcodecs_Jpeg_Batching,
+//                         testing::ValuesIn(ranges));
 
 //==================================================================================================
 
