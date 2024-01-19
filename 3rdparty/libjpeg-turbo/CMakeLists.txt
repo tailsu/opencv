@@ -115,6 +115,7 @@ if(MSVC)
   add_definitions(-W3 -wd4996 -wd4018)
 endif()
 
+set(MEM_SRCDST_SUPPORTED 1)
 if(WIN32)
   configure_file(jconfig.h.win.in jconfig.h)
 else()

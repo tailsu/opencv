@@ -210,6 +210,27 @@ make_funny_pointers(j_decompress_ptr cinfo)
 }
 
 
+// The logic here is the same as in set_bottom_pointers,
+// except that rows_left is always equal to iMCUheight.
+LOCAL(void)
+set_bottom_pointers_not_last_batch(j_decompress_ptr cinfo) {
+  my_main_ptr main_ptr = (my_main_ptr)cinfo->main;
+  int ci, i, rgroup, iMCUheight;
+  jpeg_component_info *compptr;
+  JSAMPARRAY xbuf;
+
+  for (ci = 0, compptr = cinfo->comp_info; ci < cinfo->num_components; ci++, compptr++) {
+    iMCUheight = compptr->v_samp_factor * compptr->_DCT_scaled_size;
+    rgroup = iMCUheight / cinfo->_min_DCT_scaled_size;
+    xbuf = main_ptr->xbuffer[main_ptr->whichptr][ci];
+    for (i = 0; i < rgroup * 2; i++) {
+      xbuf[iMCUheight + i] = xbuf[iMCUheight - 1];
+    }
+  }
+
+  main_ptr->rowgroups_avail++;
+}
+
 LOCAL(void)
 set_bottom_pointers(j_decompress_ptr cinfo)
 /* Change the pointer lists to duplicate the last sample row at the bottom
@@ -369,7 +390,16 @@ process_data_context_main(j_decompress_ptr cinfo, JSAMPARRAY output_buf,
     /* Check for bottom of image: if so, tweak pointers to "duplicate"
      * the last sample row, and adjust rowgroups_avail to ignore padding rows.
      */
-    if (main_ptr->iMCU_row_ctr == cinfo->total_iMCU_rows)
+    if (cinfo->batch) {
+      if (main_ptr->iMCU_row_ctr == cinfo->total_iMCU_rows_in_batch) {
+        if (cinfo->is_last_batch) {
+          set_bottom_pointers(cinfo);
+        } else {
+          set_bottom_pointers_not_last_batch(cinfo);
+        }
+      }
+    }
+    else if (main_ptr->iMCU_row_ctr == cinfo->total_iMCU_rows)
       set_bottom_pointers(cinfo);
     main_ptr->context_state = CTX_PROCESS_IMCU;
     FALLTHROUGH                 /*FALLTHROUGH*/

@@ -462,6 +462,13 @@ struct jpeg_compress_struct {
   struct jpeg_downsampler *downsample;
   struct jpeg_forward_dct *fdct;
   struct jpeg_entropy_encoder *entropy;
+  
+  struct jpeg_batch_writer *batch;
+  boolean enable_batching;
+  int rows_in_batch; // number of rows in batch, could be less than image_height.
+                      // only the last batch may have fewer rows than needed to fill an MCU row
+  int start_row_in_batch; // row number of first row in batch
+  
   jpeg_scan_info *script_space; /* workspace for jpeg_simple_progression */
   int script_space_size;
 };
@@ -704,6 +711,13 @@ struct jpeg_decompress_struct {
   struct jpeg_upsampler *upsample;
   struct jpeg_color_deconverter *cconvert;
   struct jpeg_color_quantizer *cquantize;
+
+  struct jpeg_batch_reader *batch;
+  int rows_in_batch; // number of rows in batch, could be less than image_height.
+                      // only the last batch may have fewer rows than needed to fill an MCU row
+  int start_row_in_batch; // row index of first row in batch
+  int total_iMCU_rows_in_batch;
+  boolean is_last_batch;
 };
 
 
@@ -890,6 +904,17 @@ typedef boolean (*jpeg_marker_parser_method) (j_decompress_ptr cinfo);
 /* Default error-management setup */
 EXTERN(struct jpeg_error_mgr *) jpeg_std_error(struct jpeg_error_mgr *err);
 
+typedef void (*jpeg_batch_entry_point)(void* context, int batch_index);
+
+struct jpeg_parallel_impl {
+  void (*apply)(jpeg_batch_entry_point entry_point, int num_batches, void* context);
+};
+
+
+EXTERN(void) jpeg_set_parallel_impl(struct jpeg_parallel_impl *impl);
+EXTERN(struct jpeg_parallel_impl*) jpeg_get_parallel_impl(void);
+
+
 /* Initialization of JPEG compression objects.
  * jpeg_create_compress() and jpeg_create_decompress() are the exported
  * names that applications should call.  These expand to calls on
@@ -1066,7 +1091,6 @@ EXTERN(boolean) jpeg_resync_to_restart(j_decompress_ptr cinfo, int desired);
 EXTERN(boolean) jpeg_read_icc_profile(j_decompress_ptr cinfo,
                                       JOCTET **icc_data_ptr,
                                       unsigned int *icc_data_len);
-
 
 /* These marker codes are exported since applications and data source modules
  * are likely to want to use them.

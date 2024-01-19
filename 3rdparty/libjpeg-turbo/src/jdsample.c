@@ -44,7 +44,7 @@ start_pass_upsample(j_decompress_ptr cinfo)
   /* Mark the conversion buffer empty */
   upsample->next_row_out = cinfo->max_v_samp_factor;
   /* Initialize total-height counter for detecting bottom of image */
-  upsample->rows_to_go = cinfo->output_height;
+  upsample->rows_to_go = !cinfo->batch ? cinfo->output_height : cinfo->rows_in_batch;
 }
 
 

@@ -430,9 +430,36 @@ per_scan_setup(j_compress_ptr cinfo)
 
   /* Convert restart specified in rows to actual MCU count. */
   /* Note that count must fit in 16 bits, so we provide limiting. */
+  cinfo->enable_batching = FALSE;
   if (cinfo->restart_in_rows > 0) {
     long nominal = (long)cinfo->restart_in_rows * (long)cinfo->MCUs_per_row;
     cinfo->restart_interval = (unsigned int)MIN(nominal, 65535L);
+  } else if (cinfo->restart_interval > 0 && cinfo->restart_interval <= C_JPEG_MAX_BATCHES) {
+    int requested_batches = cinfo->restart_interval;
+    cinfo->restart_interval = 0;
+
+    if (requested_batches == 1) {
+      for (int proposed_batches = C_JPEG_MAX_BATCHES; proposed_batches >= 2; --proposed_batches) {
+        int mcu_rows_per_batch = jdiv_round_up(cinfo->MCU_rows_in_scan, proposed_batches);
+        int last_batch_rows = cinfo->MCU_rows_in_scan - mcu_rows_per_batch * (proposed_batches - 1);
+        if (last_batch_rows >= 1 && last_batch_rows <= mcu_rows_per_batch) {
+          requested_batches = proposed_batches;
+          break;
+        }
+      }
+    }
+
+    if (requested_batches > 1) {
+      int mcu_rows_per_batch = jdiv_round_up(cinfo->MCU_rows_in_scan, requested_batches);
+      int restart_interval = cinfo->MCUs_per_row * mcu_rows_per_batch;
+
+      if (restart_interval <= 65535L) {
+        cinfo->enable_batching = TRUE;
+        cinfo->restart_interval = restart_interval;
+      } else {
+        WARNMS(cinfo, JWRN_RSTINTERVAL_NOT_ENOUGH_BATCHES);
+      }
+    }
   }
 }
 

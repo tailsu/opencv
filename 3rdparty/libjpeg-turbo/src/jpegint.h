@@ -286,6 +286,35 @@ struct jpeg_color_quantizer {
   void (*new_color_map) (j_decompress_ptr cinfo);
 };
 
+#define C_JPEG_MAX_BATCHES 8
+#define C_JPEG_DATA_LENGTHS_MARKER (JPEG_APP0 + 9) // best guess from https://www.disktuna.com/list-of-jpeg-markers/
+#define C_JPEG_DATA_LENGTHS_MAGIC0 0x49c6a76e
+#define C_JPEG_DATA_LENGTHS_MAGIC1 0x8b520ca1
+
+struct jpeg_batch_writer {
+  JSAMPARRAY scanlines;
+
+  int num_batches;
+  j_compress_ptr cinfos[C_JPEG_MAX_BATCHES];
+
+  struct {
+    JOCTET* data;
+    size_t size;
+  } buffers[C_JPEG_MAX_BATCHES];
+};
+
+struct jpeg_batch_reader {
+  JSAMPARRAY scanlines;
+  struct jpeg_error_mgr* main_err;
+
+  int num_batches;
+  j_decompress_ptr cinfos[C_JPEG_MAX_BATCHES];
+
+  struct {
+    JOCTET* data;
+  } buffers[C_JPEG_MAX_BATCHES];
+};
+
 
 /* Miscellaneous useful macros */
 
@@ -336,6 +365,7 @@ EXTERN(void) jinit_arith_encoder(j_compress_ptr cinfo);
 EXTERN(void) jinit_marker_writer(j_compress_ptr cinfo);
 /* Decompression module initialization routines */
 EXTERN(void) jinit_master_decompress(j_decompress_ptr cinfo);
+EXTERN(void) jinit_d_clone_master(j_decompress_ptr dst, j_decompress_ptr src);
 EXTERN(void) jinit_d_main_controller(j_decompress_ptr cinfo,
                                      boolean need_full_buffer);
 EXTERN(void) jinit_d_coef_controller(j_decompress_ptr cinfo,

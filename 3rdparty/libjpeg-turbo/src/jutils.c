@@ -131,3 +131,15 @@ jzero_far(void *target, size_t bytestozero)
 {
   memset(target, 0, bytestozero);
 }
+
+
+static struct jpeg_parallel_impl* jpeg_parallel_impl = NULL;
+
+GLOBAL(void) jpeg_set_parallel_impl(struct jpeg_parallel_impl *impl) {
+  jpeg_parallel_impl = impl;
+}
+
+GLOBAL(struct jpeg_parallel_impl*) jpeg_get_parallel_impl(void) {
+  return jpeg_parallel_impl;
+}
+

@@ -211,6 +211,11 @@ JMESSAGE(JWRN_BOGUS_ICC, "Corrupt JPEG data: bad ICC marker")
 JMESSAGE(JERR_BAD_DROP_SAMPLING,
          "Component index %d: mismatching sampling ratio %d:%d, %d:%d, %c")
 #endif
+JMESSAGE(JWRN_RSTINTERVAL_WHOLE_ROW, "restart_interval not at whole row, batching disabled")
+JMESSAGE(JWRN_RSTINTERVAL_NOT_ENOUGH_ROWS, "image too small, batching disabled")
+JMESSAGE(JWRN_RSTINTERVAL_NOT_ENOUGH_BATCHES, "too few batches, batching disabled")
+JMESSAGE(JWRN_RSTINTERVAL_TOO_MANY_BATCHES, "too many batches, batching disabled")
+JMESSAGE(JWRN_RSTINTERVAL_NOT_SUPPORTED, "restart interval specified but decoding mode is incompatible")
 
 #ifdef JMAKE_ENUM_LIST
 

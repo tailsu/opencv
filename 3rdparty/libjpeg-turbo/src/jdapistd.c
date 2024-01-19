@@ -25,6 +25,7 @@
 #include "jdmerge.h"
 #include "jdsample.h"
 #include "jmemsys.h"
+#include "setjmp.h"
 
 /* Forward declarations */
 LOCAL(boolean) output_pass_setup(j_decompress_ptr cinfo);
@@ -89,6 +90,323 @@ jpeg_start_decompress(j_decompress_ptr cinfo)
   return output_pass_setup(cinfo);
 }
 
+LOCAL(void)
+clone_decompress_struct(j_decompress_ptr dst, j_decompress_ptr src) {
+  memset(dst, 0, sizeof(struct jpeg_decompress_struct));
+
+  dst->err = src->err;
+  dst->mem = src->mem;
+  // dst->progress : no progress allowed in clones
+  dst->client_data = src->client_data;
+  dst->is_decompressor = src->is_decompressor;
+  dst->global_state = src->global_state; // clone starts in same state as original
+
+  // dst->src: clones will get a buffer with data from the main decompressor
+  dst->image_width = src->image_width;
+  dst->image_height = src->image_height;
+  dst->num_components = src->num_components;
+  dst->jpeg_color_space = src->jpeg_color_space;
+
+  dst->out_color_space = src->out_color_space;
+  dst->scale_num = src->scale_num;
+  dst->scale_denom = src->scale_denom;
+  dst->output_gamma = src->output_gamma;
+
+  // dst->buffered_image : FALSE
+  // dst->raw_data_out : FALSE
+
+  dst->dct_method = src->dct_method;
+  dst->do_fancy_upsampling = src->do_fancy_upsampling;
+
+  // dst->do_block_smoothing = src->do_block_smoothing : used only in progressive mode
+  // dst->quantize_colors : colormap not supported
+  // dst->dither_mode
+  // dst->two_pass_quantize
+  // dst->desired_number_of_colors
+  // dst->enable_1pass_quant
+  // dst->enable_external_quant
+  // dst->enable_2pass_quant
+
+  dst->output_width = src->output_width;
+  dst->output_height = src->output_height;
+  dst->out_color_components = src->out_color_components;
+  dst->output_components = src->output_components;
+
+  dst->rec_outbuf_height = src->rec_outbuf_height;
+
+  // dst->actual_number_of_colors : colormap not supported
+  // dst->colormap
+
+  dst->input_scan_number = src->input_scan_number;
+  dst->output_scan_number = src->output_scan_number;
+
+  // dst->output_scanline : not used in clones
+
+  // dst->input_iMCU_row : managed by batching
+  // dst->output_iMCU_row
+  dst->total_iMCU_rows = src->total_iMCU_rows;
+
+  // dst->coef_bits : used only in progressive mode
+
+  for (int i = 0; i < NUM_QUANT_TBLS; ++i) {
+    dst->quant_tbl_ptrs[i] = src->quant_tbl_ptrs[i];
+  }
+  for (int i = 0; i < NUM_HUFF_TBLS; ++i) {
+    dst->dc_huff_tbl_ptrs[i] = src->dc_huff_tbl_ptrs[i];
+    dst->ac_huff_tbl_ptrs[i] = src->ac_huff_tbl_ptrs[i];
+  }
+
+  dst->data_precision = src->data_precision;
+  dst->comp_info = src->comp_info;
+
+#if JPEG_LIB_VERSION >= 80
+  dst->is_baseline = src->is_baseline;
+#endif
+
+  // dst->progressive_mode : FALSE
+  // dst->arith_code : FALSE
+  // dst->arith_dc_L
+  // dst->arith_dc_U
+  // dst->arith_ac_K
+
+  // dst->restart_interval : 0 within a batch
+
+  dst->saw_JFIF_marker = src->saw_JFIF_marker;
+  dst->JFIF_major_version = src->JFIF_major_version;
+  dst->JFIF_minor_version = src->JFIF_minor_version;
+  dst->density_unit = src->density_unit;
+  dst->X_density = src->X_density;
+  dst->Y_density = src->Y_density;
+  dst->saw_Adobe_marker = src->saw_Adobe_marker;
+  dst->Adobe_transform = src->Adobe_transform;
+  dst->CCIR601_sampling = src->CCIR601_sampling;
+
+  dst->max_h_samp_factor = src->max_h_samp_factor;
+  dst->max_v_samp_factor = src->max_v_samp_factor;
+#if JPEG_LIB_VERSION >= 70
+  dst->min_DCT_h_scaled_size = src->min_DCT_h_scaled_size;
+  dst->min_DCT_v_scaled_size = src->min_DCT_v_scaled_size;
+#else
+  dst->min_DCT_scaled_size = src->min_DCT_scaled_size;
+#endif
+
+  dst->sample_range_limit = src->sample_range_limit;
+  dst->comps_in_scan = src->comps_in_scan;
+  for (int i = 0; i < MAX_COMPS_IN_SCAN; ++i) {
+    dst->cur_comp_info[i] = src->cur_comp_info[i];
+  }
+  dst->MCUs_per_row = src->MCUs_per_row;
+  dst->MCU_rows_in_scan = src->MCU_rows_in_scan;
+  dst->blocks_in_MCU = src->blocks_in_MCU;
+  for (int i = 0; i < D_MAX_BLOCKS_IN_MCU; ++i) {
+    dst->MCU_membership[i] = src->MCU_membership[i];
+  }
+
+  dst->Ss = src->Ss;
+  dst->Se = src->Se;
+  dst->Ah = src->Ah;
+  dst->Al = src->Al;
+#if JPEG_LIB_VERSION >= 80
+  dst->block_size = src->block_size;
+  dst->natural_order = src->natural_order;
+  dst->lim_Se = src->lim_Se;
+#endif
+
+  // dst->unread_marker : none at this point
+
+  // begin clone child structures
+
+  // dst->marker : entropy decoder doesn't use marker
+  
+  // inputctl might get invoked in malformed jpeg files. This form of inputctl is basically a no-op
+  dst->inputctl = dst->mem->alloc_small((j_common_ptr)dst, JPOOL_IMAGE, sizeof(struct jpeg_input_controller));
+  memset(dst->inputctl, 0, sizeof(struct jpeg_input_controller));
+  dst->inputctl->finish_input_pass = src->inputctl->finish_input_pass;
+  
+  jinit_d_clone_master(dst, src);
+  if (src->cconvert == NULL) {
+    jinit_merged_upsampler(dst);
+  } else {
+    dst->cconvert = src->cconvert; // read-only
+    jinit_upsampler(dst);
+  }
+  dst->post = src->post; // no-op, only used with color quantization
+  dst->idct = src->idct; // read-only
+  jinit_huff_decoder(dst);
+  jinit_d_coef_controller(dst, FALSE);
+  jinit_d_main_controller(dst, FALSE);
+  // dst->cquantize : is NULL
+}
+
+LOCAL(void)
+clone_start_pass(j_decompress_ptr dst) {
+  dst->entropy->start_pass(dst);
+  dst->coef->start_input_pass(dst);
+  dst->master->prepare_for_output_pass(dst);
+}
+
+LOCAL(struct jpeg_marker_struct*)
+find_marker(j_decompress_ptr cinfo, int marker) {
+  struct jpeg_marker_struct* marker_ptr = cinfo->marker_list;
+  while (marker_ptr != NULL) {
+    if (marker_ptr->marker == marker) {
+      return marker_ptr;
+    }
+    marker_ptr = marker_ptr->next;
+  }
+  return NULL;
+}
+
+struct batch_error_mgr {
+  struct jpeg_error_mgr pub;
+  jmp_buf setjmp_buffer;
+};
+
+METHODDEF(void)
+batch_error_exit(j_common_ptr cinfo) {
+  struct batch_error_mgr* err = (struct batch_error_mgr*)cinfo->err;
+  longjmp(err->setjmp_buffer, 1);
+}
+
+LOCAL(struct jpeg_error_mgr*)
+make_batch_error_mgr(j_decompress_ptr cinfo) {
+  struct batch_error_mgr* err = (struct batch_error_mgr*)
+    (*cinfo->mem->alloc_small) ((j_common_ptr)cinfo, JPOOL_IMAGE,
+      sizeof(struct batch_error_mgr));
+
+  jpeg_std_error(&err->pub);
+
+  err->pub.error_exit = &batch_error_exit;
+
+  return (struct jpeg_error_mgr*) err;
+}
+
+LOCAL(boolean)
+init_decompress_batching(j_decompress_ptr cinfo) {
+  cinfo->batch = NULL;
+  if (!jpeg_get_parallel_impl()) {
+    return FALSE;
+  }
+
+  if (cinfo->restart_interval == 0) {
+    return FALSE;
+  }
+
+  struct jpeg_marker_struct* data_lengths_marker = find_marker(cinfo, C_JPEG_DATA_LENGTHS_MARKER);
+  if (!data_lengths_marker || data_lengths_marker->data_length < 2 * sizeof(uint32_t)) {
+    return FALSE;
+  }
+  uint32_t* data_lengths = (uint32_t*)data_lengths_marker->data;
+  if (data_lengths[0] != C_JPEG_DATA_LENGTHS_MAGIC0 || data_lengths[1] != C_JPEG_DATA_LENGTHS_MAGIC1) {
+    return FALSE;
+  }
+  data_lengths += 2;
+
+  if (cinfo->restart_interval % cinfo->MCUs_per_row != 0) {
+    WARNMS(cinfo, JWRN_RSTINTERVAL_WHOLE_ROW);
+    return FALSE;
+  }
+
+  int num_batches = jdiv_round_up(cinfo->MCUs_per_row * cinfo->MCU_rows_in_scan, cinfo->restart_interval);
+  if (num_batches <= 1) {
+    return FALSE;
+  }
+  if (num_batches > C_JPEG_MAX_BATCHES) {
+    WARNMS(cinfo, JWRN_RSTINTERVAL_TOO_MANY_BATCHES);
+    return FALSE;
+  }
+
+  int expected_count = 2 /*header*/ + num_batches - 1;
+  if (data_lengths_marker->data_length != sizeof(uint32_t) * expected_count) {
+    WARNMS(cinfo, JWRN_RSTINTERVAL_NOT_SUPPORTED);
+    return FALSE;
+  }
+
+  if (cinfo->quantize_colors || cinfo->arith_code
+    || cinfo->buffered_image || cinfo->inputctl->has_multiple_scans
+    || cinfo->raw_data_out) {
+    WARNMS(cinfo, JWRN_RSTINTERVAL_NOT_SUPPORTED);
+    return FALSE;
+  }
+
+  // printf("parallelizing with %d batches\n", num_batches);
+
+  struct jpeg_batch_reader* batch = (struct jpeg_batch_reader *)
+    (*cinfo->mem->alloc_small) ((j_common_ptr)cinfo, JPOOL_IMAGE,
+      sizeof(struct jpeg_batch_reader));
+  memset(batch, 0, sizeof(struct jpeg_batch_reader));
+
+  batch->num_batches = num_batches;
+  batch->scanlines = (*cinfo->mem->alloc_small) ((j_common_ptr)cinfo, JPOOL_IMAGE,
+    sizeof(JSAMPROW) * cinfo->output_height);
+
+  int mcu_rows_per_batch = jdiv_round_up(cinfo->MCU_rows_in_scan, num_batches);
+  int scanlines_per_mcu = cinfo->max_v_samp_factor * cinfo->min_DCT_scaled_size;
+  int step = mcu_rows_per_batch * scanlines_per_mcu;
+
+  for (int i = 0; i < num_batches - 1; ++i) {
+    batch->cinfos[i] = (j_decompress_ptr)
+      (*cinfo->mem->alloc_small) ((j_common_ptr)cinfo, JPOOL_IMAGE,
+                                  sizeof(struct jpeg_decompress_struct));
+
+    j_decompress_ptr ci = batch->cinfos[i];
+    clone_decompress_struct(ci, cinfo);
+
+    size_t data_size = data_lengths[i] + 2; // add 2 bytes for the restart marker, which we'll replace with EOI after checking it
+    JOCTET* data = batch->buffers[i].data = (JOCTET*) malloc(data_size);
+    for (size_t bufptr = 0; bufptr < data_size; ) {
+      if (cinfo->src->bytes_in_buffer == 0) {
+        if (!cinfo->src->fill_input_buffer(cinfo)) {
+          WARNMS(cinfo, JWRN_JPEG_EOF);
+          return FALSE;
+        }
+      }
+      size_t to_read = MIN(data_size - bufptr, cinfo->src->bytes_in_buffer);
+      memcpy(data + bufptr, cinfo->src->next_input_byte, to_read);
+      bufptr += to_read;
+      cinfo->src->next_input_byte += to_read;
+      cinfo->src->bytes_in_buffer -= to_read;
+    }
+
+    if (data[data_size - 2] != 0xFF ||
+      data[data_size - 1] != JPEG_RST0 + (i & 7)) {
+      WARNMS(cinfo, JWRN_HIT_MARKER);
+      return FALSE;
+    }
+    data[data_size - 1] = JPEG_EOI;
+
+    jpeg_mem_src(ci, data, data_size);
+
+    ci->start_row_in_batch = i * step;
+    ci->rows_in_batch = step;
+    ci->total_iMCU_rows_in_batch = mcu_rows_per_batch;
+    ci->batch = batch;
+    ci->is_last_batch = FALSE;
+
+    ci->input_iMCU_row = i * mcu_rows_per_batch;
+    ci->output_iMCU_row = ci->input_iMCU_row;
+
+    clone_start_pass(ci);
+
+    ci->err = make_batch_error_mgr(ci);
+    
+    ci->mem = NULL; // no allocations in clones past this point
+  }
+  // last batch is the main decompressor
+  batch->cinfos[num_batches - 1] = cinfo;
+
+  cinfo->start_row_in_batch = (num_batches - 1) * step;
+  cinfo->rows_in_batch = cinfo->output_height - cinfo->start_row_in_batch;
+  cinfo->total_iMCU_rows_in_batch = cinfo->total_iMCU_rows - (num_batches - 1) * mcu_rows_per_batch;
+  cinfo->is_last_batch = TRUE;
+  
+  cinfo->input_iMCU_row = (num_batches - 1) * mcu_rows_per_batch;
+  cinfo->output_iMCU_row = cinfo->input_iMCU_row;
+  cinfo->restart_interval = 0;
+
+  cinfo->batch = batch;
+  return TRUE;
+}
 
 /*
  * Set up for an output pass, and perform any dummy pass(es) needed.
@@ -138,6 +456,9 @@ output_pass_setup(j_decompress_ptr cinfo)
    * jpeg_read_scanlines or jpeg_read_raw_data.
    */
   cinfo->global_state = cinfo->raw_data_out ? DSTATE_RAW_OK : DSTATE_SCANNING;
+
+  (void)init_decompress_batching(cinfo);
+
   return TRUE;
 }
 
@@ -254,6 +575,23 @@ jpeg_crop_scanline(j_decompress_ptr cinfo, JDIMENSION *xoffset,
   }
 }
 
+LOCAL(void) batch_decompress_worker(void* context, int batch_index)
+{
+  j_decompress_ptr cinfo = (j_decompress_ptr)context;
+  j_decompress_ptr ci = cinfo->batch->cinfos[batch_index];
+  struct batch_error_mgr* err = (struct batch_error_mgr*)ci->err;
+  if (setjmp(err->setjmp_buffer) == 0) {
+    for (JDIMENSION row_ctr = 0; row_ctr < ci->rows_in_batch; ) {
+      JDIMENSION row_ctr_internal = 0;
+      ci->main->process_data(ci, &cinfo->batch->scanlines[ci->start_row_in_batch + row_ctr], &row_ctr_internal, ci->rows_in_batch - row_ctr);
+      if (row_ctr_internal == 0) {
+        break;
+      }
+      row_ctr += row_ctr_internal;
+    }
+  }
+  free(cinfo->batch->buffers[batch_index].data); // last batch pointer is NULL, that's ok
+}
 
 /*
  * Read some scanlines of data from the JPEG decompressor.
@@ -272,8 +610,6 @@ GLOBAL(JDIMENSION)
 jpeg_read_scanlines(j_decompress_ptr cinfo, JSAMPARRAY scanlines,
                     JDIMENSION max_lines)
 {
-  JDIMENSION row_ctr;
-
   if (cinfo->global_state != DSTATE_SCANNING)
     ERREXIT1(cinfo, JERR_BAD_STATE, cinfo->global_state);
   if (cinfo->output_scanline >= cinfo->output_height) {
@@ -289,10 +625,37 @@ jpeg_read_scanlines(j_decompress_ptr cinfo, JSAMPARRAY scanlines,
   }
 
   /* Process some data */
-  row_ctr = 0;
-  (*cinfo->main->process_data) (cinfo, scanlines, &row_ctr, max_lines);
-  cinfo->output_scanline += row_ctr;
-  return row_ctr;
+  if (cinfo->batch) {
+    JDIMENSION num_lines = MIN(max_lines, cinfo->output_height - cinfo->output_scanline);
+    for (int i = 0; i < num_lines; ++i) {
+      cinfo->batch->scanlines[cinfo->output_scanline++] = scanlines[i];
+    }
+    if (cinfo->output_scanline == cinfo->output_height) {
+      struct jpeg_parallel_impl* parallel = jpeg_get_parallel_impl();
+
+      // the main decompressor will be called in a worker thread and may still produce errors
+      // for malformed jpegs. opencv's error handler uses setjmp/longjmp, which doesn't work across
+      // threads. For the duration of the parallel operation we replace the main error handler
+      // with the batch error handler
+      cinfo->batch->main_err = cinfo->err;
+      cinfo->err = make_batch_error_mgr(cinfo);
+      
+      parallel->apply(batch_decompress_worker, cinfo->batch->num_batches, cinfo);
+
+      // Here we could check for errors in the batch error handlers
+      // and propagate them to the main error handler. However, opencv's
+      // implementation doesn't check for errors at this point anyway,
+      // so the effort would be wasted.
+
+      cinfo->err = cinfo->batch->main_err;
+    }
+    return num_lines;
+  } else {
+    JDIMENSION row_ctr = 0;
+    (*cinfo->main->process_data) (cinfo, scanlines, &row_ctr, max_lines);
+    cinfo->output_scanline += row_ctr;
+    return row_ctr;
+  }
 }
 
 

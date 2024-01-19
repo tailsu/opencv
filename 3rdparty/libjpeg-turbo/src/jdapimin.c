@@ -259,6 +259,11 @@ jpeg_read_header(j_decompress_ptr cinfo, boolean require_image)
       cinfo->global_state != DSTATE_INHEADER)
     ERREXIT1(cinfo, JERR_BAD_STATE, cinfo->global_state);
 
+  // true max size is 4 bytes * (2 + C_JPEG_MAX_BATCHES - 1) or about 40 bytes,
+  // but the file might be coming from a compressor with a different max batch size,
+  // so add some slack
+  jpeg_save_markers(cinfo, C_JPEG_DATA_LENGTHS_MARKER, 0xFF);
+
   retcode = jpeg_consume_input(cinfo);
 
   switch (retcode) {

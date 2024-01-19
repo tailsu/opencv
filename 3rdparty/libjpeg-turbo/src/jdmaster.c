@@ -724,3 +724,14 @@ jinit_master_decompress(j_decompress_ptr cinfo)
 
   master_selection(cinfo);
 }
+
+GLOBAL(void)
+jinit_d_clone_master(j_decompress_ptr dst, j_decompress_ptr src)
+{
+  dst->master = (struct jpeg_decomp_master *)
+    (*dst->mem->alloc_small) ((j_common_ptr)dst, JPOOL_IMAGE,
+                                sizeof(my_decomp_master));
+
+  *(my_decomp_master*)dst->master = *(my_decomp_master*)src->master;
+  
+}

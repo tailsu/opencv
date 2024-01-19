@@ -86,7 +86,7 @@ start_pass_prep(j_compress_ptr cinfo, J_BUF_MODE pass_mode)
     ERREXIT(cinfo, JERR_BAD_BUFFER_MODE);
 
   /* Initialize total-height counter for detecting bottom of image */
-  prep->rows_to_go = cinfo->image_height;
+  prep->rows_to_go = !cinfo->batch ? cinfo->image_height : cinfo->rows_in_batch;
   /* Mark the conversion buffer empty */
   prep->next_buf_row = 0;
 #ifdef CONTEXT_ROWS_SUPPORTED

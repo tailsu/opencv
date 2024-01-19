@@ -209,7 +209,7 @@ start_pass_merged_upsample(j_decompress_ptr cinfo)
   /* Mark the spare buffer empty */
   upsample->spare_full = FALSE;
   /* Initialize total-height counter for detecting bottom of image */
-  upsample->rows_to_go = cinfo->output_height;
+  upsample->rows_to_go = !cinfo->batch ? cinfo->output_height : cinfo->rows_in_batch;
 }
 
 
