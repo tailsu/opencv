@@ -493,7 +493,7 @@ bool  JpegDecoder::readData( Mat& img )
                 }
             }
 
-
+            //cinfo->    = FALSE; // TODO: keep enabled
             jpeg_start_decompress( cinfo );
 
 #ifndef JCS_EXTENSIONS
